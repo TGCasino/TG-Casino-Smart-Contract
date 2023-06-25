@@ -1,71 +1,83 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.7;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+contract CustodialContract {
+    address public owner;
 
-contract CustodialContract is Ownable, ReentrancyGuard {
-    constructor() public {}
-    receive() external payable {}
+    event Withdrawed(address to, uint256 amount);
 
-    function withdrawCoin(address to) external nonReentrant onlyOwner returns (bool) {
-        uint amount = address(this).balance;
-        require(amount > 0 , "CustodialContract:No balance in contract.");
-		(bool success,) = to.call{value : amount}("");
-        return success;
+    modifier onlyAdmin() {
+        require(msg.sender == owner, "CustodialContract:Caller does not have admin privileges");
+        _;
     }
 
-    function withdrawERC20Token(address token, address to) external nonReentrant onlyOwner {
-        uint256 amount = IERC20(token).balanceOf(address(this));
-        require(amount > 0, "CustodialContract:Insufficient ERC20 balance in contract.");
-        IERC20(token).transfer(to, amount);
+    constructor(address _owner) {
+        owner = _owner;
+    }
+
+    receive() external payable {}
+
+    function withdraw(address to) external onlyAdmin {
+        uint amount = address(this).balance;
+        require(amount > 0 , "CustodialContract:Incorrect amount.");
+		(bool success,) = to.call{value : amount}("");
+        
+        if (success)
+            emit Withdrawed(to, amount);
     }
 }
 
-contract CasinoBankRoll is Ownable, ReentrancyGuard {
-    mapping (bytes32 => address) private addressTracker;
-    // CustodialContract public custodialWallet;
+contract CasinoBankRoll {
+    address public creator;
+    mapping (uint => address) private addressTracker;
 
-    event WithdrawedFromContract(address to, uint256 amount);
-    event WithdrawedFromCustodialWallet(address from, address to);
-    event WithdrawedERC20FromCustodialWallet(address from, address to, address token);
+    event Deploy(address addr);
+    event Withdrawed(address to, uint256 amount);
 
-    constructor() public {}
-    
-	receive() external payable {}
-
-    function createCustodialWallet(string memory data) external onlyOwner returns (address) {
-        CustodialContract custodialWallet = new CustodialContract();
-
-        addressTracker[keccak256(abi.encodePacked(data))] = address(custodialWallet);
-        return address(custodialWallet);
+    modifier onlyCreator() {
+        require(msg.sender == creator, "CasinoBankRoll:Caller does not have creator privileges");
+        _;
     }
 
-    function withdrawFromContract(address to, uint256 amount) external nonReentrant onlyOwner {
-        require(amount < address(this).balance, "CasinoBankRoll:Insufficient funds to withdraw.");
+    constructor() {
+        creator = msg.sender;
+    }
+
+    receive() external payable {}
+
+    function deploy(uint _salt) external onlyCreator {
+        CustodialContract _contract = new CustodialContract{
+            salt: bytes32(_salt)
+        }(msg.sender);
+
+        addressTracker[_salt] = address(_contract);
+
+        emit Deploy(address(_contract));
+    }
+
+    function getAddress(bytes memory bytecode, uint _salt) public view returns (address) {
+        bytes32 hash = keccak256(
+            abi.encodePacked(
+                bytes1(0xff), address(this), _salt, keccak256(bytecode)
+            )
+        );
+        return address (uint160(uint(hash)));
+    }
+
+    function getBytecode(address _owner) public pure returns (bytes memory) {
+        bytes memory bytecode = type(CustodialContract).creationCode;
+        return abi.encodePacked(bytecode, abi.encode(_owner));
+    }
+
+    function withdraw(address to, uint256 amount) external onlyCreator {
+        require(amount <= address(this).balance, "CasinoBankRoll:Insufficient funds.");
 		(bool success,) = to.call{value : amount}("");
 
-        if (success) {
-            emit WithdrawedFromContract(to, amount);
-        }
+        if (success)
+            emit Withdrawed(to, amount);
     }
 
-    function withdrawFromCustodialWallet(string memory data, address payable from, address to) external nonReentrant onlyOwner {
-        require(addressTracker[keccak256(abi.encodePacked(data))] == from, "CasinoBankRoll:No matched address");
-        CustodialContract(from).withdrawCoin(to);
-
-        emit WithdrawedFromCustodialWallet(from, to);
-    }
-
-    function withdrawERC20FromCustodialWallet(string memory data, address payable from, address to, address token) external nonReentrant onlyOwner {
-        require(addressTracker[keccak256(abi.encodePacked(data))] == from, "CasinoBankRoll:No matched address");
-        CustodialContract(from).withdrawERC20Token(token, to);
-
-        emit WithdrawedERC20FromCustodialWallet(from, to, token);
-    }
-
-    function getCustodialWallet(string memory data) external view returns (address) {
-        return addressTracker[keccak256(abi.encodePacked(data))];
+    function getCustodialAddress(uint salt) external view returns (address) {
+        return addressTracker[salt];
     }
 }
